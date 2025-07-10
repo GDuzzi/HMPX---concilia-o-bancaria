@@ -15,7 +15,7 @@ def parse_valor(valor):
     try: return float(valor)
     except: return 0.0
 
-def importar_arquivo(path_arquivo, tipo, conta_corrente, conta_fornecedor, conta_cliente, base_path, mapa_depara):
+def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara):
     mapa = {}
     if tipo == 'SAIDA' and base_path:
         df_base = pd.read_excel(base_path) if base_path.endswith(".xlsx") else pd.read_csv(base_path)
@@ -55,17 +55,17 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, conta_fornecedor, conta
                 elif 'tarifa' in doc_norm: deb = '4698'
                 elif 'salario' in doc_norm or 'holerite' in doc_norm: deb = '1634'
                 elif 'seguro' in doc_norm: deb = '1744'
-                elif doc_norm == 'nd': deb = conta_fornecedor
+                elif doc_norm == 'nd': deb = 123
                 else:
                     chave = nome_norm.split()[0] if nome_norm else ""
-                    deb = mapa.get(chave, conta_fornecedor)
+                    deb = mapa.get(chave)
 
                 cred = conta_corrente
                 valor *= -1
 
             elif tipo == 'ENTRADA':
                 deb = conta_corrente
-                cred = conta_cliente
+                cred = 1234
             else:
                 continue
 
@@ -74,7 +74,8 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, conta_fornecedor, conta
                 "descricao": hist_final,
                 "valor": valor,
                 "conta_debito": deb,
-                "conta_credito": cred
+                "conta_credito": cred,
+                "tipo": "D" if tipo == "SAIDA" else "C"
             })
         except:
             continue
