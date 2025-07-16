@@ -3,5 +3,10 @@
     "nome": "MECFLU - INDUSTRIA, COMERCIO E PRESTACAO DE SERVICOS DE VEDACOES INDUSTRIAIS LTDA",
     "parser": "mecflu",
     "pasta_extratos": "dados/mecflu"
+  },
+  "imperio": {
+    "nome": "IMPERIO PECAS AUTOMOTIVAS RP EIRELI",
+    "parser": "imperio",
+    "pasta_extratos": "dados/imperio"
   }
 }

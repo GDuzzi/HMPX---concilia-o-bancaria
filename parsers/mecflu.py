@@ -1,71 +1,126 @@
-# parsers/mecflu.py
-
 import pandas as pd
-import os
 import unicodedata
 from datetime import datetime
 
 def normalize_text(text):
-    if not isinstance(text, str): text = str(text)
+    if not isinstance(text, str):
+        text = str(text)
     return " ".join(unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii").lower().split())
 
 def parse_valor(valor):
     valor = str(valor).replace("R$", "").replace("-", "").strip().replace(" ", "")
     valor = valor.replace(".", "").replace(",", ".") if "," in valor else valor
-    try: return float(valor)
-    except: return 0.0
+    try:
+        return float(valor)
+    except:
+        return 0.0
+
+# Dicionário com contas padrão
+CONTAS_PADRAO = {
+    "cartao": "1737",
+    "juros": "4701",
+    "tarifa": "4698",
+    "CPFL": "4477",
+    "salario": "1634",
+    "holerite": "1634",
+    "estagio": "1634",  
+    "seguro": "1744",
+    "desconhecido": "4951",
+    "nd": "4582",
+    "prolabore": "1635",
+    "entrada_credito_padrao": "142"
+}
 
 def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara):
     mapa = {}
+
+    # Carrega base de fornecedores para fallback
     if tipo == 'SAIDA' and base_path:
         df_base = pd.read_excel(base_path) if base_path.endswith(".xlsx") else pd.read_csv(base_path)
         df_base.columns = [normalize_text(col) for col in df_base.columns]
         for _, row in df_base.iterrows():
-            nome = normalize_text(row['fornecedor'])
+            nome = normalize_text(row.get('fornecedor', ''))
             chave = nome.split()[0] if nome else ""
-            mapa[chave] = str(row['codigo'])
+            mapa[chave] = str(row.get('codigo', ''))
 
+    # Lê o relatório da empresa
     df = pd.read_csv(path_arquivo, delimiter=';', encoding='latin-1', header=1)
-    df.columns = [normalize_text(c) for c in df.columns]
+    df.columns = [normalize_text(c.lower()) for c in df.columns]
     df.dropna(subset=[df.columns[0]], inplace=True)
 
     lancamentos = []
+
     for _, row in df.iterrows():
         try:
             part = row.get('fornecedor', row.get('cliente', ''))
             doc = row.get('documento', '')
             hist = row.get('historico', '')
             obs = row.get('obs', '')
-            data = row.get('data de pagamento', row.get('data', ''))
-            valor = parse_valor(row.get('valor pago', row.get('valor', '0')))
 
+            # Tentativa robusta de pegar a data
+            data_raw = (
+                row.get('data de pagamento') or
+                row.get('pagamento') or
+                row.get('data') or
+                ''
+            )
+            try:
+                data = pd.to_datetime(data_raw, dayfirst=True).date()
+            except:
+                continue
+
+            valor = parse_valor(row.get('valor pago', row.get('valor', '0')))
             if not data or not part or valor == 0:
                 continue
 
             hist_final = normalize_text(f"{part} - {doc} - {hist} - {obs}").upper()
 
+            # Monta contas contábeis
             if tipo == 'SAIDA':
-                doc_norm = normalize_text(doc)
+                hist_final = normalize_text(f"{part} - {doc}").lower()
+                doc_norm = hist_final 
+
                 nome_norm = normalize_text(part)
+                chave = nome_norm.split()[0] if nome_norm else ""
 
                 if nome_norm in mapa_depara:
                     deb = mapa_depara[nome_norm]
-                elif 'cartao' in doc_norm and 'credito' in doc_norm: deb = '1737'
-                elif 'juros' in doc_norm: deb = '4701'
-                elif 'tarifa' in doc_norm: deb = '4698'
-                elif 'salario' in doc_norm or 'holerite' in doc_norm: deb = '1634'
-                elif 'seguro' in doc_norm: deb = '1744'
-                elif doc_norm == 'nd': deb = 123
+
+                elif 'cartao' in doc_norm or 'credito' in doc_norm:
+                    deb = CONTAS_PADRAO['cartao']
+
+                elif 'juros' in doc_norm:
+                    deb = CONTAS_PADRAO["juros"]
+
+                elif 'tarifa' in doc_norm:
+                    deb = CONTAS_PADRAO["tarifa"]
+
+                elif 'salario' in doc_norm or 'holerite' in doc_norm or 'estagio' in doc_norm:
+                    deb = CONTAS_PADRAO["salario"]
+
+                elif 'prolabore' in doc_norm or 'pro-labore' in doc_norm:
+                    deb = CONTAS_PADRAO["prolabore"]
+
+                elif 'seguro' in doc_norm:
+                    deb = CONTAS_PADRAO["seguro"]
+
+                elif 'energia' in doc_norm:
+                    deb = CONTAS_PADRAO["CPFL"]
+
+                # só se não tiver nenhuma outra condição, e o doc for literalmente "nd"
+                elif doc_norm.strip() in ['nd', 'n.d', 'n.d.']:
+                    deb = CONTAS_PADRAO["nd"]
+
+                # fallback final
                 else:
-                    chave = nome_norm.split()[0] if nome_norm else ""
-                    deb = mapa.get(chave)
+                    deb = mapa.get(chave, CONTAS_PADRAO["desconhecido"])
 
                 cred = conta_corrente
-                valor *= -1
+                valor *= -1  # saída é negativo
 
             elif tipo == 'ENTRADA':
                 deb = conta_corrente
-                cred = 1234
+                cred = CONTAS_PADRAO["entrada_credito_padrao"]
             else:
                 continue
 
@@ -77,7 +132,54 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara)
                 "conta_credito": cred,
                 "tipo": "D" if tipo == "SAIDA" else "C"
             })
-        except:
+
+        except Exception as e:
             continue
 
     return lancamentos
+
+def conciliar_entradas(transacoes_entrada, extrato_banco):
+    if not transacoes_entrada or extrato_banco.empty:
+        return pd.DataFrame()
+
+    df_empresa = pd.DataFrame(transacoes_entrada)
+    df_banco = extrato_banco.copy()
+
+    df_empresa["data"] = pd.to_datetime(df_empresa["data"], errors="coerce", dayfirst=True)
+    df_banco["data"] = pd.to_datetime(df_banco["data"], errors="coerce", dayfirst=True)
+    df_empresa = df_empresa.dropna(subset=["data"])
+    df_banco = df_banco.dropna(subset=["data"])
+
+    empresa_agg = df_empresa[df_empresa["tipo"] == "C"].groupby("data")["valor"].sum().rename("total_relatorio")
+    banco_agg = df_banco[df_banco["tipo"] == "C"].groupby(["data", "banco"])["valor"].sum().unstack(fill_value=0)
+    banco_agg.columns = [f"{col}_extrato" for col in banco_agg.columns]
+
+    resumo = pd.concat([empresa_agg, banco_agg], axis=1).fillna(0)
+    resumo["total_bancos"] = resumo.filter(like="_extrato").sum(axis=1)
+    resumo["diferenca"] = (resumo["total_relatorio"] - resumo["total_bancos"]).round(2)
+    resumo["status_conciliacao"] = resumo["diferenca"].apply(lambda d: "OK" if abs(d) < 0.01 else "Analisar")
+
+    return resumo.reset_index()
+
+def conciliar_saidas(transacoes_saida, extrato_banco):
+    if not transacoes_saida or extrato_banco.empty:
+        return pd.DataFrame()
+
+    df_empresa = pd.DataFrame(transacoes_saida)
+    df_banco = extrato_banco.copy()
+
+    df_empresa["data"] = pd.to_datetime(df_empresa["data"], errors="coerce", dayfirst=True)
+    df_banco["data"] = pd.to_datetime(df_banco["data"], errors="coerce", dayfirst=True)
+    df_empresa = df_empresa.dropna(subset=["data"])
+    df_banco = df_banco.dropna(subset=["data"])
+
+    empresa_agg = df_empresa[df_empresa["tipo"] == "D"].groupby("data")["valor"].sum().rename("total_relatorio")
+    banco_agg = df_banco[df_banco["tipo"] == "D"].groupby(["data", "banco"])["valor"].sum().unstack(fill_value=0)
+    banco_agg.columns = [f"{col}_extrato" for col in banco_agg.columns]
+
+    resumo = pd.concat([empresa_agg, banco_agg], axis=1).fillna(0)
+    resumo["total_bancos"] = resumo.filter(like="_extrato").sum(axis=1)
+    resumo["diferenca"] = (resumo["total_relatorio"] - resumo["total_bancos"]).round(2)
+    resumo["status_conciliacao"] = resumo["diferenca"].apply(lambda d: "OK" if abs(d) < 0.01 else "Analisar")
+
+    return resumo.reset_index()

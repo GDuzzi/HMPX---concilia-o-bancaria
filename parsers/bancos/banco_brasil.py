@@ -2,6 +2,13 @@ import pdfplumber
 import pandas as pd
 from datetime import datetime
 import re
+import unicodedata
+
+def normalizar(texto: str) -> str:
+    texto = unicodedata.normalize("NFD", texto)
+    texto = texto.encode("ascii", "ignore").decode("utf-8")
+    texto = re.sub(r"\s+", "", texto)  # remove todos os espaços
+    return texto.lower()
 
 def importar_extrato(path_pdf: str) -> pd.DataFrame:
     dados = []
@@ -41,6 +48,10 @@ def importar_extrato(path_pdf: str) -> pd.DataFrame:
 
                     historico = " ".join(linha[1:-1])
                     historico = re.sub(r"\s{2,}", " ", historico).strip()
+                    historico_normalizado = normalizar(historico)
+
+                    if "saldo" in historico_normalizado:
+                        continue
 
                     dados.append({
                         "data": pd.to_datetime(data_fmt),
