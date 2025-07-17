@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageTk
 import threading
 from customtkinter import CTkImage
+import unicodedata
 
 
 CAMINHO_CONFIG = os.path.join("config", "empresas.json")
@@ -41,7 +42,11 @@ def identificar_categoria(historico: str) -> str:
         return "Pagamento"
     else:
         return "Outros"
-    
+def normalize_text(text):
+    if not isinstance(text, str):
+        text = str(text)
+    return " ".join(unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii").lower().split())
+
 def gerar_resumo_diario(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not all(col in df.columns for col in ["data", "valor", "tipo", "banco"]):
         return pd.DataFrame()
@@ -124,6 +129,42 @@ def salvar_resultados(transacoes, nome_base="extrato", incluir_data=True, salvar
         messagebox.showerror("Erro", f"Erro ao salvar arquivos:\n{e}")
         return
     
+def gerar_txt_a_partir_do_excel():
+    try:
+        caminho_planilha = filedialog.askopenfilename(
+            title="Selecionar planilha Excel",
+            filetypes=[("Arquivos Excel", "*.xlsx")]
+        )
+        if not caminho_planilha:
+            return
+        if not os.path.exists(caminho_planilha):
+            messagebox.showerror("Erro", "O arquivo relatorio_empresa.xlsx não foi encontrado na sua área de trabalho.")
+            return
+
+        df = pd.read_excel(caminho_planilha)
+        if df.empty:
+            messagebox.showerror("Erro", "O arquivo relatorio_empresa.xlsx está vazio.")
+            return
+
+        # Carregar DE-PARA
+        mapa = carregar_depara()
+
+        if "descricao" in df.columns and "conta_debito" in df.columns:
+            for i, row in df.iterrows():
+                desc = str(row["descricao"])
+                conta_atual = str(row["conta_debito"])
+                fornecedor = desc.split("-")[0].strip().lower()
+                fornecedor_normalizado = normalize_text(fornecedor)
+                conta_nova = mapa.get(fornecedor_normalizado)
+                if conta_nova and conta_nova != conta_atual:
+                    df.at[i, "conta_debito"] = conta_nova
+
+        # Salva Excel atualizado e gera o TXT
+        salvar_resultados(df.to_dict(orient="records"), nome_base="relatorio_empresa", incluir_data=False, salvar_txt=True)
+
+    except Exception as e:
+        messagebox.showerror("Erro", f"Ocorreu um erro ao gerar o TXT:\n{e}")
+
 def remover_transferencias_entre_bancos(df_banco: pd.DataFrame) -> pd.DataFrame:
     if df_banco.empty or not all(col in df_banco.columns for col in ["data", "valor", "tipo", "banco"]):
         return df_banco
@@ -172,7 +213,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
     menu_frame.pack(pady=(0, 25))
 
-    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau"], width=340)
+    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau","santander"], width=340)
     banco_opcao.set("banco_brasil")
     banco_opcao.pack(pady=8)
 
@@ -266,7 +307,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
         except Exception as e:
             messagebox.showerror("Erro", f"Erro no processamento:\n{e}")
 
-    # === LOADING ===
+    
 
     spinner_path = "static/img/spinner.gif"
     spinner_frames = []
@@ -327,8 +368,8 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     botoes = [
         ("Importar Relatório da Empresa", lambda: executar_em_thread(importar_relatorios_empresa), "#ED8936", "#DD6B20"),
         ("Adicionar Extrato Bancário", lambda: executar_em_thread(importar_extrato), "#3182CE", "#225EA8"),
-        ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749")
-    ]
+        ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749")    
+        ]
     for i, (texto, comando, cor, cor_hover) in enumerate(botoes):
         ctk.CTkButton(
             botoes_frame,
@@ -389,6 +430,7 @@ def iniciar_aplicacao():
     )
     combo.pack(pady=10)
 
+
     # Função de confirmação
     def confirmar_empresa():
         nome = combo.get()
@@ -408,10 +450,24 @@ def iniciar_aplicacao():
         font=("Arial", 14, "bold"),
         corner_radius=20,
         fg_color="#3182CE",           # azul profissional
-        hover_color="#225EA8",        # hover mais escuro
+        hover_color="#225EA8",
         text_color="white",
         command=confirmar_empresa
-    ).pack(pady=35)
+    ).pack(pady=(30, 10))  # margem superior maior
+
+    # Botão: GERAR TXT DA PLANILHA (embaixo)
+    ctk.CTkButton(
+        master=frame,
+        text="Gerar TXT da Planilha",
+        height=44,
+        width=220,
+        font=("Arial", 13, "bold"),
+        corner_radius=20,
+        fg_color="#805AD5",            # roxo elegante
+        hover_color="#6B46C1",
+        text_color="white",
+        command=gerar_txt_a_partir_do_excel
+    ).pack(pady=(0, 30))  # margem inferior maior
 
     # Rodapé
     ctk.CTkLabel(
