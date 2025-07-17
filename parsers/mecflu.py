@@ -15,7 +15,7 @@ def parse_valor(valor):
     except:
         return 0.0
 
-# Dicionário com contas padrão
+# Contas contábeis padrão
 CONTAS_PADRAO = {
     "cartao": "1737",
     "juros": "4701",
@@ -34,7 +34,7 @@ CONTAS_PADRAO = {
 def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara):
     mapa = {}
 
-    # Carrega base de fornecedores para fallback
+    # Carrega base de fornecedores (se SAIDA)
     if tipo == 'SAIDA' and base_path:
         df_base = pd.read_excel(base_path) if base_path.endswith(".xlsx") else pd.read_csv(base_path)
         df_base.columns = [normalize_text(col) for col in df_base.columns]
@@ -49,6 +49,7 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara)
     df.dropna(subset=[df.columns[0]], inplace=True)
 
     lancamentos = []
+    conciliacao = []
 
     for _, row in df.iterrows():
         try:
@@ -57,12 +58,10 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara)
             hist = row.get('historico', '')
             obs = row.get('obs', '')
 
-            # Tentativa robusta de pegar a data
             data_raw = (
                 row.get('data de pagamento') or
                 row.get('pagamento') or
-                row.get('data') or
-                ''
+                row.get('data') or ''
             )
             try:
                 data = pd.to_datetime(data_raw, dayfirst=True).date()
@@ -75,52 +74,40 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara)
 
             hist_final = normalize_text(f"{part} - {doc} - {hist} - {obs}").upper()
 
-            # Monta contas contábeis
             if tipo == 'SAIDA':
-                hist_final = normalize_text(f"{part} - {doc}").lower()
-                doc_norm = hist_final 
-
+                doc_norm = normalize_text(f"{part} - {doc}").lower()
                 nome_norm = normalize_text(part)
                 chave = nome_norm.split()[0] if nome_norm else ""
 
                 if nome_norm in mapa_depara:
                     deb = mapa_depara[nome_norm]
-
                 elif 'cartao' in doc_norm or 'credito' in doc_norm:
                     deb = CONTAS_PADRAO['cartao']
-
                 elif 'juros' in doc_norm:
                     deb = CONTAS_PADRAO["juros"]
-
                 elif 'tarifa' in doc_norm:
                     deb = CONTAS_PADRAO["tarifa"]
-
                 elif 'salario' in doc_norm or 'holerite' in doc_norm or 'estagio' in doc_norm:
                     deb = CONTAS_PADRAO["salario"]
-
                 elif 'prolabore' in doc_norm or 'pro-labore' in doc_norm:
                     deb = CONTAS_PADRAO["prolabore"]
-
                 elif 'seguro' in doc_norm:
                     deb = CONTAS_PADRAO["seguro"]
-
                 elif 'energia' in doc_norm:
                     deb = CONTAS_PADRAO["CPFL"]
-
-                # só se não tiver nenhuma outra condição, e o doc for literalmente "nd"
                 elif doc_norm.strip() in ['nd', 'n.d', 'n.d.']:
                     deb = CONTAS_PADRAO["nd"]
-
-                # fallback final
                 else:
                     deb = mapa.get(chave, CONTAS_PADRAO["desconhecido"])
 
                 cred = conta_corrente
-                valor *= -1  # saída é negativo
+                valor = -abs(valor)
+                tipo_mov = "D"
 
             elif tipo == 'ENTRADA':
                 deb = conta_corrente
                 cred = CONTAS_PADRAO["entrada_credito_padrao"]
+                tipo_mov = "C"
             else:
                 continue
 
@@ -130,17 +117,27 @@ def importar_arquivo(path_arquivo, tipo, conta_corrente, base_path, mapa_depara)
                 "valor": valor,
                 "conta_debito": deb,
                 "conta_credito": cred,
-                "tipo": "D" if tipo == "SAIDA" else "C"
+                "tipo": tipo_mov
             })
 
-        except Exception as e:
+            conciliacao.append({
+                "data": data,
+                "valor": abs(valor),
+                "tipo": tipo_mov
+            })
+
+        except:
             continue
 
-    return lancamentos
+        
+
+    return lancamentos, conciliacao
+
 
 def conciliar_entradas(transacoes_entrada, extrato_banco):
     if not transacoes_entrada or extrato_banco.empty:
         return pd.DataFrame()
+    
 
     df_empresa = pd.DataFrame(transacoes_entrada)
     df_banco = extrato_banco.copy()
@@ -149,6 +146,7 @@ def conciliar_entradas(transacoes_entrada, extrato_banco):
     df_banco["data"] = pd.to_datetime(df_banco["data"], errors="coerce", dayfirst=True)
     df_empresa = df_empresa.dropna(subset=["data"])
     df_banco = df_banco.dropna(subset=["data"])
+
 
     empresa_agg = df_empresa[df_empresa["tipo"] == "C"].groupby("data")["valor"].sum().rename("total_relatorio")
     banco_agg = df_banco[df_banco["tipo"] == "C"].groupby(["data", "banco"])["valor"].sum().unstack(fill_value=0)
@@ -179,7 +177,7 @@ def conciliar_saidas(transacoes_saida, extrato_banco):
 
     resumo = pd.concat([empresa_agg, banco_agg], axis=1).fillna(0)
     resumo["total_bancos"] = resumo.filter(like="_extrato").sum(axis=1)
-    resumo["diferenca"] = (resumo["total_relatorio"] - resumo["total_bancos"]).round(2)
+    resumo["diferenca"] = (resumo["total_bancos"] + resumo["total_relatorio"]).round(2)
     resumo["status_conciliacao"] = resumo["diferenca"].apply(lambda d: "OK" if abs(d) < 0.01 else "Analisar")
 
     return resumo.reset_index()

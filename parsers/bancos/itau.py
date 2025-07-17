@@ -14,9 +14,7 @@ def importar_extrato(path_pdf: str, nome_banco: str = "extrato") -> pd.DataFrame
     with pdfplumber.open(path_pdf) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
             tables = page.extract_tables()
-            print(f"\n📄 Página {page_num}")
             for t_idx, table in enumerate(tables):
-                print(f"📊 Tabela {t_idx + 1}: {len(table)} linhas")
 
                 for row in table:
                     linha_concatenada = " | ".join([cell.strip() if cell else "" for cell in row])
@@ -35,7 +33,6 @@ def importar_extrato(path_pdf: str, nome_banco: str = "extrato") -> pd.DataFrame
                         valor = float(valor_str.replace(".", "").replace(",", "."))
                         tipo = "C" if valor > 0 else "D"
                     except Exception as e:
-                        print(f"❌ Erro conversão linha: {linha_concatenada} => {e}")
                         continue
 
                     # Usa primeira célula não vazia que não seja data ou valor como histórico
@@ -49,12 +46,5 @@ def importar_extrato(path_pdf: str, nome_banco: str = "extrato") -> pd.DataFrame
                     })
 
     df = pd.DataFrame(dados)
-
-    if df.empty:
-        print(f"\n⚠️ O extrato do {nome_banco} está vazio.")
-    else:
-        print(f"\n✅ {len(df)} lançamentos encontrados com sucesso.")
-        df[df["tipo"] == "C"].to_excel(f"{nome_banco}_creditos.xlsx", index=False)
-        df[df["tipo"] == "D"].to_excel(f"{nome_banco}_debitos.xlsx", index=False)
 
     return df

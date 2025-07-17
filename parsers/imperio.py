@@ -1,6 +1,7 @@
 import pandas as pd
 import unicodedata
 from datetime import datetime
+from rapidfuzz import process, fuzz
 
 def normalize_text(text):
     if not isinstance(text, str):
@@ -41,17 +42,21 @@ CONTAS_PADRAO = {
 }
 
 def importar_arquivo(path_arquivo, conta_corrente, base_path, mapa_depara, tipo):
-    mapa = {}
+    mapa_codigo = {}
+    mapa_nome = {}
 
     # Carrega base de fornecedores
     if base_path:
         df_base = pd.read_excel(base_path) if base_path.endswith(".xlsx") else pd.read_csv(base_path)
         df_base.columns = [normalize_text(col) for col in df_base.columns]
         for _, row in df_base.iterrows():
-            nome = normalize_text(row.get('fornecedor', ''))
-            chave = nome.split()[0] if nome else ""
-            mapa[chave] = str(row.get('codigo', ''))
+            nome_original = str(row.get('fornecedor', '')).strip()
+            nome_norm = normalize_text(nome_original)
+            if nome_norm:
+                mapa_codigo[nome_norm] = str(row.get('codigo', ''))
+                mapa_nome[nome_norm] = nome_original
 
+    # Leitura do relatório (CSV com ; e latin-1)
     df = pd.read_csv(path_arquivo, delimiter=';', encoding='latin-1', header=0, dtype=str)
     df.columns = [normalize_text(col) for col in df.columns]
     df.dropna(subset=[df.columns[0]], inplace=True)
@@ -59,12 +64,16 @@ def importar_arquivo(path_arquivo, conta_corrente, base_path, mapa_depara, tipo)
     lancamentos = []
     conciliacao_movimentos = []
 
+    if not hasattr(importar_arquivo, "cache_fornecedor"):
+        importar_arquivo.cache_fornecedor = {}
+    if not hasattr(importar_arquivo, "fornecedor_index"):
+        importar_arquivo.fornecedor_index = list(mapa_codigo.keys())
+
     for _, row in df.iterrows():
         try:
             data_raw = row.get("datamovimento", "")
             valormovimento = parse_valor(row.get("valormovimento", 0))
 
-            # ✅ Proteção contra explosão de registros
             if isinstance(valormovimento, (int, float)) and valormovimento != 0:
                 data_conc = pd.to_datetime(data_raw, format="%Y-%m-%d", errors="coerce")
                 if not pd.isna(data_conc):
@@ -73,7 +82,7 @@ def importar_arquivo(path_arquivo, conta_corrente, base_path, mapa_depara, tipo)
                         "valor": float(valormovimento),
                         "tipo": "C" if valormovimento > 0 else "D"
                     })
-                continue  # ← evita inclusão indevida em 'lancamentos'
+                continue
 
             valorentrada = parse_valor(row.get("valorentrada", 0))
             valorsaida = parse_valor(row.get("valorsaida", 0))
@@ -87,29 +96,32 @@ def importar_arquivo(path_arquivo, conta_corrente, base_path, mapa_depara, tipo)
             data = data.date()
 
             hist_norm = normalize_text(historico)
-            chave = hist_norm.split()[0] if hist_norm else ""
+            cache_key = hist_norm
 
-            doc_norm = hist_norm
-            if hist_norm in mapa_depara:
-                deb = mapa_depara[hist_norm]
-            elif 'cartao' in doc_norm or 'credito' in doc_norm:
-                deb = CONTAS_PADRAO['cartao']
-            elif 'juros' in doc_norm:
-                deb = CONTAS_PADRAO["juros"]
-            elif 'tarifa' in doc_norm:
-                deb = CONTAS_PADRAO["tarifa"]
-            elif 'salario' in doc_norm or 'holerite' in doc_norm or 'estagio' in doc_norm:
-                deb = CONTAS_PADRAO["salario"]
-            elif 'prolabore' in doc_norm or 'pro-labore' in doc_norm:
-                deb = CONTAS_PADRAO["prolabore"]
-            elif 'seguro' in doc_norm:
-                deb = CONTAS_PADRAO["seguro"]
-            elif 'energia' in doc_norm:
-                deb = CONTAS_PADRAO["CPFL"]
-            elif 'nd' in doc_norm.strip().split():
-                deb = CONTAS_PADRAO["nd"]
+            if cache_key in importar_arquivo.cache_fornecedor:
+                fornecedor_nome, deb = importar_arquivo.cache_fornecedor[cache_key]
             else:
-                deb = mapa.get(chave, CONTAS_PADRAO["desconhecido"])
+                fornecedor_nome = ""
+                deb = CONTAS_PADRAO["desconhecido"]
+
+                if hist_norm in mapa_depara:
+                    deb = mapa_depara[hist_norm]
+                elif hist_norm in mapa_codigo:
+                    deb = mapa_codigo[hist_norm]
+                    fornecedor_nome = mapa_nome[hist_norm]
+                else:
+                    match = process.extractOne(
+                        hist_norm,
+                        importar_arquivo.fornecedor_index,
+                        scorer=fuzz.ratio,
+                        score_cutoff=85
+                    )
+                    if match:
+                        melhor = match[0]
+                        deb = mapa_codigo[melhor]
+                        fornecedor_nome = mapa_nome[melhor]
+
+                importar_arquivo.cache_fornecedor[cache_key] = (fornecedor_nome, deb)
 
             if valorentrada > 0:
                 tipo_lanc = "C"
@@ -130,25 +142,18 @@ def importar_arquivo(path_arquivo, conta_corrente, base_path, mapa_depara, tipo)
                 "valor": float(valor),
                 "conta_debito": conta_debito,
                 "conta_credito": conta_credito,
-                "tipo": tipo_lanc
+                "tipo": tipo_lanc,
+                "fornecedor_nome": fornecedor_nome
             })
 
         except Exception as e:
-            print(f"⚠️ Erro ao processar linha: {e}")
             continue
 
-    print(f"✅ Total de lançamentos contábeis: {len(lancamentos)}")
-    print(f"✅ Total de movimentos para conciliação: {len(conciliacao_movimentos)}")
-
     return lancamentos, conciliacao_movimentos
-
 
 def conciliar_entradas(transacoes_entrada, extrato_banco):
     if not transacoes_entrada or extrato_banco.empty:
         return pd.DataFrame()
-    
-    print(f"📥 Entradas da empresa: {len(transacoes_entrada)}")
-    print(f"🏦 Entradas do banco  : {len(extrato_banco)}")
 
     df_empresa = pd.DataFrame(transacoes_entrada)
     df_banco = extrato_banco.copy()
@@ -157,9 +162,6 @@ def conciliar_entradas(transacoes_entrada, extrato_banco):
     df_banco["data"] = pd.to_datetime(df_banco["data"], errors="coerce", dayfirst=True)
     df_empresa = df_empresa.dropna(subset=["data"])
     df_banco = df_banco.dropna(subset=["data"])
-    print("→ Empresa tipo C:", (df_empresa["tipo"] == "C").sum())
-    print("→ Banco tipo C  :", (df_banco["tipo"] == "C").sum())
-
 
     empresa_agg = df_empresa[df_empresa["tipo"] == "C"].groupby("data")["valor"].sum().rename("total_relatorio")
     banco_agg = df_banco[df_banco["tipo"] == "C"].groupby(["data", "banco"])["valor"].sum().unstack(fill_value=0)

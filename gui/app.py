@@ -6,6 +6,9 @@ import importlib
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from PIL import Image, ImageTk
+import threading
+from customtkinter import CTkImage
 
 
 CAMINHO_CONFIG = os.path.join("config", "empresas.json")
@@ -143,6 +146,7 @@ def remover_transferencias_entre_bancos(df_banco: pd.DataFrame) -> pd.DataFrame:
     return df_filtrado
     
 def abrir_tela_parametros(id_empresa, nome_empresa):
+
     try:
         with open(CAMINHO_CONFIG, "r", encoding="utf-8") as f:
             config = json.load(f)[id_empresa]
@@ -157,15 +161,13 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     frame = ctk.CTkFrame(janela, corner_radius=20)
     frame.pack(expand=True, padx=40, pady=40, fill="both")
 
-    # Título e nome da empresa
     ctk.CTkLabel(frame, text="Importação e Conciliação de Extratos", font=("Arial", 20, "bold")).pack(pady=(20, 10))
     ctk.CTkLabel(frame, text=f"Empresa selecionada: {nome_empresa}", font=("Arial", 12)).pack(pady=(0, 25))
 
-    # Campo conta corrente (único campo manual)
     conta_corrente_entry = ctk.CTkEntry(frame, placeholder_text="Conta Corrente (ex: 10201)", width=340)
     conta_corrente_entry.pack(pady=(0, 30))
 
-    nome_parser_empresa = config["parser"]  # <- primeiro
+    nome_parser_empresa = config["parser"]
 
     menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
     menu_frame.pack(pady=(0, 25))
@@ -174,7 +176,6 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     banco_opcao.set("banco_brasil")
     banco_opcao.pack(pady=8)
 
-    # agora sim condiciona o tipo
     if nome_parser_empresa != "imperio":
         tipo_opcao = ctk.CTkOptionMenu(menu_frame, values=["SAIDA", "ENTRADA"], width=340)
         tipo_opcao.set("SAIDA")
@@ -183,34 +184,19 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
         tipo_opcao = None
 
     parser_empresa = None
-    transacoes_saida = []
-    transacoes_entrada = []
-    extratos_bancarios = []
-    conciliacoes_entrada = []
-    conciliacoes_saida = []
+    transacoes_saida, transacoes_entrada, extratos_bancarios = [], [], []
+    conciliacoes_entrada, conciliacoes_saida = [], []
+
     def importar_relatorios_empresa():
         caminhos_relatorios = filedialog.askopenfilenames(
-            title="Selecionar Relatórios da Empresa (CSV, Excel ou PDF)",
-            filetypes=[
-                ("Arquivos CSV", "*.csv"),
-                ("Arquivos Excel", "*.xlsx"),
-                ("Arquivos PDF", "*.pdf")
-            ]
+            title="Selecionar Relatórios da Empresa",
+            filetypes=[("Arquivos CSV", "*.csv"), ("Arquivos Excel", "*.xlsx"), ("Arquivos PDF", "*.pdf")]
         )
         if not caminhos_relatorios:
             return
-        transacoes_entrada.clear()
-        transacoes_saida.clear()
-        conciliacoes_entrada.clear()
-        conciliacoes_saida.clear()
 
-        if tipo_opcao:
-            tipo = tipo_opcao.get()
-            tipos = [tipo]
-            modo_automatico = False
-        else:
-            tipos = [None]  # <- passaremos apenas uma vez, tipo=None
-            modo_automatico = True
+        tipos = [tipo_opcao.get()] if tipo_opcao else [None]
+        modo_automatico = tipo_opcao is None
         conta_corrente = conta_corrente_entry.get()
         mapa = carregar_depara()
 
@@ -218,6 +204,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
             nome_parser_empresa = config["parser"]
             nonlocal parser_empresa
             parser_empresa = importlib.import_module(f"parsers.{nome_parser_empresa}")
+            
 
             for tipo in tipos:
                 for caminho in caminhos_relatorios:
@@ -229,34 +216,21 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
                         mapa_depara=mapa
                     )
                     if modo_automatico:
-                        if transacoes:
-                            for t in transacoes:
-                                if t["tipo"] == "D":
-                                    transacoes_saida.append(t)
-                                    conciliacoes_saida.extend(conciliacao)
-                                elif t["tipo"] == "C":
-                                    transacoes_entrada.append(t)
-                                    conciliacoes_entrada.extend(conciliacao)
+                        for t in transacoes:
+                            (transacoes_saida if t["tipo"] == "D" else transacoes_entrada).append(t)
+                        for c in conciliacao:
+                            (conciliacoes_saida if c["tipo"] == "D" else conciliacoes_entrada).append(c)
                     else:
-                        if tipo == "SAIDA":
-                            transacoes_saida.extend(transacoes)
-                            conciliacoes_saida.extend(conciliacao)
-                        else:
-                            transacoes_entrada.extend(transacoes)
-                            conciliacoes_entrada.extend(conciliacao)
-            tipo_msg = tipo.capitalize() if tipo else "Entradas e Saídas"
-            messagebox.showinfo("Sucesso", f"{tipo_msg} importadas com sucesso.")
+                        (transacoes_saida if tipo == "SAIDA" else transacoes_entrada).extend(transacoes)
+                        (conciliacoes_saida if tipo == "SAIDA" else conciliacoes_entrada).extend(conciliacao)
+            messagebox.showinfo("Sucesso", "Relatórios importados com sucesso.")
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao importar relatórios:\n{e}")
 
     def importar_extrato():
-        caminho_extrato = filedialog.askopenfilename(
-            title="Selecionar Extrato Bancário (PDF)",
-            filetypes=[("Arquivos PDF", "*.pdf")]
-        )
+        caminho_extrato = filedialog.askopenfilename(title="Selecionar Extrato Bancário (PDF)", filetypes=[("Arquivos PDF", "*.pdf")])
         if not caminho_extrato:
             return
-
         banco_selecionado = banco_opcao.get()
         try:
             parser_banco = importlib.import_module(f"parsers.bancos.{banco_selecionado}")
@@ -271,53 +245,90 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
             messagebox.showerror("Erro", f"Erro ao importar extrato:\n{e}")
 
     def processar_tudo():
-
         if not extratos_bancarios:
             messagebox.showerror("Erro", "Nenhum extrato bancário foi importado.")
             return
         if not transacoes_saida and not transacoes_entrada:
             messagebox.showerror("Erro", "Importe pelo menos um relatório de SAÍDA ou ENTRADA.")
             return
-
         try:
-            print("\n🚨 Quantidade real antes da conciliação:")
-            print("→ Entradas:", len(transacoes_entrada))
-            print("→ Saídas  :", len(transacoes_saida))
-            print("→ Conciliação entradas:", len(conciliacoes_entrada))
-            print("→ Conciliação saídas  :", len(conciliacoes_saida))
-
-            # Junta todos os extratos bancários
             extrato_banco = pd.concat(extratos_bancarios, ignore_index=True)
-
-            # Junta todos os lançamentos contábeis (para salvar como relatorio_empresa)
+            if nome_parser_empresa == "mecflu":
+                extrato_banco = remover_transferencias_entre_bancos(extrato_banco)
             todas_transacoes_empresa = transacoes_saida + transacoes_entrada
             salvar_resultados(todas_transacoes_empresa, nome_base="relatorio_empresa", salvar_txt=True)
-
-            # Junta todos os movimentos originais da empresa para conciliação (com base no valormovimento)
             movimentos_entrada = [mov for mov in conciliacoes_entrada if mov["tipo"] == "C"]
             movimentos_saida = [mov for mov in conciliacoes_saida if mov["tipo"] == "D"]
-
-            # Executa a conciliação por data e tipo
             resumo_saida = parser_empresa.conciliar_saidas(movimentos_saida, extrato_banco)
             salvar_resultados(resumo_saida, nome_base="conciliacao_por_saldo_saida")
-
             resumo_entrada = parser_empresa.conciliar_entradas(movimentos_entrada, extrato_banco)
             salvar_resultados(resumo_entrada, nome_base="conciliacao_por_saldo_entrada")
-
         except Exception as e:
             messagebox.showerror("Erro", f"Erro no processamento:\n{e}")
 
+    # === LOADING ===
 
-    # Botões
+    spinner_path = "static/img/spinner.gif"
+    spinner_frames = []
+    if os.path.exists(spinner_path):
+        spinner_img = Image.open(spinner_path)
+        try:
+            while True:
+                spinner_frames.append(CTkImage(spinner_img.copy(), size=(48, 48)))
+                spinner_img.seek(len(spinner_frames))
+        except EOFError:
+            pass
+
+    # Container central
+    overlay_path = "static/img/overlay.png"  # imagem com transparência real
+
+    spinner_container = ctk.CTkLabel(frame, text="", image=CTkImage(Image.open(overlay_path), size=(200, 200)))
+    spinner_container.place(relx=0.5, rely=2.50, anchor="center")
+
+    # Adiciona spinner por cima
+    spinner_label = ctk.CTkLabel(spinner_container, text="", image=spinner_frames[0])
+    spinner_label.place(relx=0.5, rely=0.4, anchor="center")
+
+    spinner_text = ctk.CTkLabel(spinner_container, text="Processando, aguarde...", font=("Arial", 12))
+    spinner_text.place(relx=0.5, rely=0.7, anchor="center")
+
+
+    def animar_spinner(frame_idx=0):
+        if not spinner_frames:
+            return
+        frame = spinner_frames[frame_idx % len(spinner_frames)]
+        spinner_label.configure(image=frame)
+        janela.after(80, animar_spinner, frame_idx + 1)
+
+    def mostrar_loading():
+        spinner_container.place(relx=0.5, rely=0.5, anchor="center")
+        spinner_container.lift()
+        animar_spinner()
+
+
+    def ocultar_loading():
+        spinner_container.place_forget()
+
+    def executar_em_thread(func):
+        def iniciar_processo():
+            def run():
+                try:
+                    func()
+                finally:
+                    janela.after(0, ocultar_loading)
+            threading.Thread(target=run).start()
+
+        mostrar_loading()
+        janela.after(200, iniciar_processo)  # Garante que o loading apareça antes de processar
+
+    # === BOTÕES ===
     botoes_frame = ctk.CTkFrame(frame, fg_color="transparent")
     botoes_frame.pack(pady=10)
-
     botoes = [
-        ("Importar Relatório da Empresa", importar_relatorios_empresa, "#ED8936", "#DD6B20"),
-        ("Adicionar Extrato Bancário", importar_extrato, "#3182CE", "#225EA8"),
-        ("Processar Tudo", processar_tudo, "#2F855A", "#276749")
+        ("Importar Relatório da Empresa", lambda: executar_em_thread(importar_relatorios_empresa), "#ED8936", "#DD6B20"),
+        ("Adicionar Extrato Bancário", lambda: executar_em_thread(importar_extrato), "#3182CE", "#225EA8"),
+        ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749")
     ]
-
     for i, (texto, comando, cor, cor_hover) in enumerate(botoes):
         ctk.CTkButton(
             botoes_frame,
