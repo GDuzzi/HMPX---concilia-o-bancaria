@@ -1,0 +1,1 @@
+(venv) PS C:\Users\gustavo.duzzi\Documents\Projetos\Conciliacao Bancaria\HMPX---Bancario> pyinstaller --noconfirm --onefile --windowed --hidden-import rapidfuzz --hidden-import pdfplumber --add-data "config;config" --add-data "gui;gui" --add-data "static;static" --add-data "parsers;parsers" --icon=static/img/Logo_HMPX_Padrao.ico --name main main.py

@@ -5,7 +5,7 @@
     "pasta_extratos": "dados/mecflu"
   },
   "imperio": {
-    "nome": "IMPERIO PECAS AUTOMOTIVAS RP EIRELI",
+    "nome": "IMPERIO",
     "parser": "imperio",
     "pasta_extratos": "dados/imperio"
   }

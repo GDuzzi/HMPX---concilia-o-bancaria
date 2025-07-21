@@ -35,7 +35,7 @@ CONTAS_PADRAO = {
     "holerite": "1634",
     "estagio": "1634",
     "seguro": "1744",
-    "desconhecido": "4951",
+    "desconhecido": "14010",
     "nd": "4582",
     "prolabore": "1635",
     "entrada_credito_padrao": "142"

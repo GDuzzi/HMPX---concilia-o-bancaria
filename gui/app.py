@@ -10,11 +10,21 @@ from PIL import Image, ImageTk
 import threading
 from customtkinter import CTkImage
 import unicodedata
+import sys
+import os
+from gui.tela_depara import abrir_tela_depara
 
+def recurso_path(rel_path):
+    """Resolve caminho para arquivos estáticos, compatível com PyInstaller"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, rel_path)
+    return os.path.join(os.path.abspath("."), rel_path)
 
-CAMINHO_CONFIG = os.path.join("config", "empresas.json")
-CAMINHO_DEPARA = os.path.join("config", "DE-PARA.xlsx")
-CAMINHO_BASE_FORNECEDORES = os.path.join("config", "Base_Fornecedores.xlsx")
+CAMINHO_CONFIG = recurso_path(os.path.join("config", "empresas.json"))
+# CAMINHO_DEPARA = os.path.join("config", "DE-PARA.xlsx")
+CAMINHO_DEPARA = r"\\192.168.10.1\hmpx$\Contabil\Controles Internos\__BEATRIZ\projeto\DE-PARA (1).xlsx"
+CAMINHO_BASE_FORNECEDORES = recurso_path(os.path.join("config", "Base_Fornecedores.xlsx"))
+
 
 def caminho_area_de_trabalho():
     return str(Path.home() / "Desktop")
@@ -72,6 +82,7 @@ def carregar_empresa():
 def carregar_depara():
     mapa = {}
     try:
+        print(f"[DEBUG] Carregando DE-PARA a partir de: {CAMINHO_DEPARA}")
         df = pd.read_excel(CAMINHO_DEPARA)
         df.columns = [col.strip().lower() for col in df.columns]
         for _, row in df.iterrows():
@@ -196,8 +207,15 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
         return
 
     janela = ctk.CTkToplevel()
+    def ao_fechar_janela():
+        janela.destroy()
+        app.deiconify()  # volta para a tela inicial
+
+    janela.protocol("WM_DELETE_WINDOW", ao_fechar_janela)
+
+    janela.protocol("WM_DELETE_WINDOW", ao_fechar_janela)
     janela.title(f"Importar Extrato - {nome_empresa}")
-    janela.geometry("920x520")
+    janela.geometry("1280x520")
 
     frame = ctk.CTkFrame(janela, corner_radius=20)
     frame.pack(expand=True, padx=40, pady=40, fill="both")
@@ -213,7 +231,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
     menu_frame.pack(pady=(0, 25))
 
-    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau","santander"], width=340)
+    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau","santander", "mercado_pago"], width=340)
     banco_opcao.set("banco_brasil")
     banco_opcao.pack(pady=8)
 
@@ -296,23 +314,42 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
             extrato_banco = pd.concat(extratos_bancarios, ignore_index=True)
             if nome_parser_empresa == "mecflu":
                 extrato_banco = remover_transferencias_entre_bancos(extrato_banco)
+
+            nome_limpo = normalize_text(nome_empresa).replace(" ", "_")
+            conta_corrente = conta_corrente_entry.get().strip()
+            nome_base = f"{nome_limpo}_{conta_corrente}"
+
+
             todas_transacoes_empresa = transacoes_saida + transacoes_entrada
-            salvar_resultados(todas_transacoes_empresa, nome_base="relatorio_empresa", salvar_txt=True)
+            salvar_resultados(todas_transacoes_empresa, nome_base=f"Empresa_{nome_base}", salvar_txt=True)
+            
             movimentos_entrada = [mov for mov in conciliacoes_entrada if mov["tipo"] == "C"]
             movimentos_saida = [mov for mov in conciliacoes_saida if mov["tipo"] == "D"]
             resumo_saida = parser_empresa.conciliar_saidas(movimentos_saida, extrato_banco)
-            salvar_resultados(resumo_saida, nome_base="conciliacao_por_saldo_saida")
+
+            salvar_resultados(resumo_saida, nome_base=f"Saida_{nome_base}")
+
             resumo_entrada = parser_empresa.conciliar_entradas(movimentos_entrada, extrato_banco)
-            salvar_resultados(resumo_entrada, nome_base="conciliacao_por_saldo_entrada")
+
+            salvar_resultados(resumo_entrada, nome_base=f"Entrada_{nome_base}")
+
         except Exception as e:
             messagebox.showerror("Erro", f"Erro no processamento:\n{e}")
-
+    def resetar_dados():
+        nonlocal transacoes_saida, transacoes_entrada, extratos_bancarios
+        nonlocal conciliacoes_entrada, conciliacoes_saida
+        transacoes_saida.clear()
+        transacoes_entrada.clear()
+        extratos_bancarios.clear()
+        conciliacoes_entrada.clear()
+        conciliacoes_saida.clear()
+        messagebox.showinfo("Reset concluído", "Todos os dados foram apagados.")
     
 
     spinner_path = "static/img/spinner.gif"
     spinner_frames = []
     if os.path.exists(spinner_path):
-        spinner_img = Image.open(spinner_path)
+        spinner_img = Image.open(recurso_path("static/img/spinner.gif"))
         try:
             while True:
                 spinner_frames.append(CTkImage(spinner_img.copy(), size=(48, 48)))
@@ -323,12 +360,16 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     # Container central
     overlay_path = "static/img/overlay.png"  # imagem com transparência real
 
-    spinner_container = ctk.CTkLabel(frame, text="", image=CTkImage(Image.open(overlay_path), size=(200, 200)))
+    spinner_container = ctk.CTkLabel(frame, text="", image=CTkImage(Image.open(recurso_path(overlay_path)), size=(200, 200)))
     spinner_container.place(relx=0.5, rely=2.50, anchor="center")
 
     # Adiciona spinner por cima
-    spinner_label = ctk.CTkLabel(spinner_container, text="", image=spinner_frames[0])
-    spinner_label.place(relx=0.5, rely=0.4, anchor="center")
+    if spinner_frames:
+        spinner_label = ctk.CTkLabel(spinner_container, text="", image=spinner_frames[0])
+        spinner_label.place(relx=0.5, rely=0.4, anchor="center")
+    else:
+        spinner_label = ctk.CTkLabel(spinner_container, text="Carregando...", font=("Arial", 12))
+        spinner_label.place(relx=0.5, rely=0.5, anchor="center")
 
     spinner_text = ctk.CTkLabel(spinner_container, text="Processando, aguarde...", font=("Arial", 12))
     spinner_text.place(relx=0.5, rely=0.7, anchor="center")
@@ -357,7 +398,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
                     func()
                 finally:
                     janela.after(0, ocultar_loading)
-            threading.Thread(target=run).start()
+            threading.Thread(target=run, daemon=True).start()
 
         mostrar_loading()
         janela.after(200, iniciar_processo)  # Garante que o loading apareça antes de processar
@@ -368,7 +409,8 @@ def abrir_tela_parametros(id_empresa, nome_empresa):
     botoes = [
         ("Importar Relatório da Empresa", lambda: executar_em_thread(importar_relatorios_empresa), "#ED8936", "#DD6B20"),
         ("Adicionar Extrato Bancário", lambda: executar_em_thread(importar_extrato), "#3182CE", "#225EA8"),
-        ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749")    
+        ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749")  ,
+        ("Resetar Dados", lambda: executar_em_thread(resetar_dados), "#E53E3E", "#C53030")  # vermelho  
         ]
     for i, (texto, comando, cor, cor_hover) in enumerate(botoes):
         ctk.CTkButton(
@@ -390,18 +432,17 @@ def iniciar_aplicacao():
 
     app = ctk.CTk()
     app.title("Conciliador Bancário")
-    app.geometry("800x520")
-    app.iconbitmap("static/img/Logo_HMPX_Padrao.ico")
+    app.geometry("1080x600")
+    app.iconbitmap(recurso_path("static/img/Logo_HMPX_Padrao.ico"))
 
     # Frame centralizado
     frame = ctk.CTkFrame(app, corner_radius=20)
     frame.pack(expand=True, padx=40, pady=40, fill="both")
 
     # Logo
-    logo_path = "static/img/Logo_HMPX_Padrao.png"
-    if os.path.exists(logo_path):
+    if os.path.exists(recurso_path("static/img/Logo_HMPX_Padrao.png")):
         from PIL import Image
-        logo_img = ctk.CTkImage(Image.open(logo_path), size=(300, 85))
+        logo_img = ctk.CTkImage(Image.open(recurso_path("static/img/Logo_HMPX_Padrao.png")), size=(300, 85))
         ctk.CTkLabel(frame, image=logo_img, text="").pack(pady=(10, 10))
 
     # Título e instrução
@@ -453,13 +494,13 @@ def iniciar_aplicacao():
         hover_color="#225EA8",
         text_color="white",
         command=confirmar_empresa
-    ).pack(pady=(30, 10))  # margem superior maior
+    ).pack(pady=10, anchor="center")  # margem superior maior
 
     # Botão: GERAR TXT DA PLANILHA (embaixo)
     ctk.CTkButton(
         master=frame,
         text="Gerar TXT da Planilha",
-        height=44,
+        height=48,
         width=220,
         font=("Arial", 13, "bold"),
         corner_radius=20,
@@ -467,7 +508,20 @@ def iniciar_aplicacao():
         hover_color="#6B46C1",
         text_color="white",
         command=gerar_txt_a_partir_do_excel
-    ).pack(pady=(0, 30))  # margem inferior maior
+    ).pack(pady=10, anchor="center")  # margem inferior maior
+
+    ctk.CTkButton(
+        master=frame,
+        text="Editar DE-PARA",
+        height=48,
+        width=220,
+        font=("Arial", 13, "bold"),
+        corner_radius=20,
+        fg_color="#D69E2E",
+        hover_color="#B7791F",
+        text_color="white",
+        command=lambda: abrir_tela_depara(app)
+    ).pack(pady=10, anchor="center")  # Aproximação com o botão de cima
 
     # Rodapé
     ctk.CTkLabel(
@@ -476,4 +530,9 @@ def iniciar_aplicacao():
         font=("Arial", 11),
         text_color="#4A5568"
     ).pack(side="bottom", pady=10)
+    def ao_fechar():
+        app.destroy()
+        os._exit(0)  # Força a saída total do process
+
+    app.protocol("WM_DELETE_WINDOW", ao_fechar)
     app.mainloop()
