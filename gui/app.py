@@ -1,13 +1,15 @@
 import customtkinter as ctk
 from tkinter import messagebox
+from tkinter import filedialog
 import os
 import json
 from PIL import Image
 from services.config import recurso_path, carregar_empresa
-from services.processamento import gerar_txt_a_partir_do_excel
+from parsers.BaseRelatorio import BaseRelatorio
 from gui.tela_depara import abrir_tela_depara
 from gui.tela_parametros import abrir_tela_parametros
 
+relatorio = BaseRelatorio()
 
 def iniciar_aplicacao():
     ctk.set_appearance_mode("light")
@@ -65,10 +67,34 @@ def iniciar_aplicacao():
         abrir_tela_parametros(id_empresa, nome, app)
         app.withdraw()
 
+    def gerar_txt_a_partir_da_planilha():
+        try:
+            caminho = filedialog.askopenfilename(
+                title="Selecione a planilha de lançamentos",
+                filetypes=[("Planilhas Excel", "*.xlsx")]
+            )
+            if not caminho:
+                return
+
+            import pandas as pd
+            df = pd.read_excel(caminho)
+            if df.empty:
+                messagebox.showerror("Erro", "O arquivo está vazio.")
+                return
+
+            lancamentos = df.to_dict(orient="records")
+            destino = os.path.dirname(caminho)
+
+            relatorio.gerar_arquivo_txt(lancamentos, destino)
+            messagebox.showinfo("Sucesso", f"Arquivo TXT gerado na mesma pasta da planilha!")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro ao gerar o TXT:\n{e}")
+    
     # Botões
     botoes = [
         ("Iniciar Conciliação", confirmar_empresa, "#3182CE", "#225EA8"),
-        ("Gerar TXT da Planilha", lambda: gerar_txt_a_partir_do_excel(recurso_path("config/DE-PARA.xlsx")), "#805AD5", "#6B46C1"),
+        ("Gerar TXT da Planilha", lambda: gerar_txt_a_partir_da_planilha(recurso_path("config/DE-PARA.xlsx")), "#805AD5", "#6B46C1"),
         ("Editar DE-PARA", lambda: abrir_tela_depara(app), "#D69E2E", "#B7791F")
     ]
 

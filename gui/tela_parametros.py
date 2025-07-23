@@ -5,20 +5,23 @@ import pandas as pd
 import threading
 from PIL import Image
 from customtkinter import CTkImage
-
+from parsers.baseParser import ParserBase
+from services.utils import remover_transferencias_entre_bancos
+from parsers.registry import get_empresa
 from services.config import recurso_path, caminho_area_de_trabalho
 from services.depara import carregar_depara
-from services.processamento import (
-    salvar_resultados,
-    remover_transferencias_entre_bancos,
-    gerar_txt_a_partir_do_excel,
-    normalize_text
-)
+from parsers.BaseConciliacao import BaseConciliacao
+from parsers.BaseRelatorio import BaseRelatorio
+from datetime import datetime
+
+
+
 
 def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
     import json
     import os
-
+    parser_class = get_empresa(id_empresa.upper())
+    parser = parser_class()
     CAMINHO_CONFIG = recurso_path("config/empresas.json")
     CAMINHO_BASE_FORNECEDORES = recurso_path("config/Base_Fornecedores.xlsx")
 
@@ -45,20 +48,17 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
     ctk.CTkLabel(frame, text="Importação e Conciliação de Extratos", font=("Arial", 20, "bold")).pack(pady=(20, 10))
     ctk.CTkLabel(frame, text=f"Empresa selecionada: {nome_empresa}", font=("Arial", 12)).pack(pady=(0, 25))
 
-    conta_corrente_entry = ctk.CTkEntry(frame, placeholder_text="Conta Corrente (ex: 10201)", width=340)
-    conta_corrente_entry.pack(pady=(0, 30))
 
-    nome_parser_empresa = config["parser"]
 
     menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
     menu_frame.pack(pady=(0, 25))
 
-    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau", "santander", "mercado_pago"], width=340)
+    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau", "santander"], width=340)
     banco_opcao.set("banco_brasil")
     banco_opcao.pack(pady=8)
 
     tipo_opcao = None
-    if nome_parser_empresa != "imperio":
+    if id_empresa.lower() != "imperio":
         tipo_opcao = ctk.CTkOptionMenu(menu_frame, values=["SAIDA", "ENTRADA"], width=340)
         tipo_opcao.set("SAIDA")
         tipo_opcao.pack(pady=8)
@@ -66,6 +66,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
     parser_empresa = None
     transacoes_saida, transacoes_entrada, extratos_bancarios = [], [], []
     conciliacoes_entrada, conciliacoes_saida = [], []
+    lancamentos_empresa_por_banco = {}
 
     def importar_relatorios_empresa():
         caminhos_relatorios = filedialog.askopenfilenames(
@@ -75,32 +76,25 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
         if not caminhos_relatorios:
             return
 
-        tipos = [tipo_opcao.get()] if tipo_opcao else [None]
-        modo_automatico = tipo_opcao is None
-        conta_corrente = conta_corrente_entry.get()
-        mapa = carregar_depara(recurso_path("config/DE-PARA.xlsx"))
-
         try:
-            nonlocal parser_empresa
-            parser_empresa = importlib.import_module(f"parsers.{nome_parser_empresa}")
+            nonlocal parser_empresa, lancamentos_empresa_por_banco
 
-            for tipo in tipos:
-                for caminho in caminhos_relatorios:
-                    transacoes, conciliacao = parser_empresa.importar_arquivo(
-                        path_arquivo=caminho,
-                        tipo=tipo,
-                        conta_corrente=conta_corrente,
-                        base_path=CAMINHO_BASE_FORNECEDORES,
-                        mapa_depara=mapa
-                    )
-                    if modo_automatico:
-                        for t in transacoes:
-                            (transacoes_saida if t["tipo"] == "D" else transacoes_entrada).append(t)
-                        for c in conciliacao:
-                            (conciliacoes_saida if c["tipo"] == "D" else conciliacoes_entrada).append(c)
-                    else:
-                        (transacoes_saida if tipo == "SAIDA" else transacoes_entrada).extend(transacoes)
-                        (conciliacoes_saida if tipo == "SAIDA" else conciliacoes_entrada).extend(conciliacao)
+            dados_por_banco = parser.importar_arquivo(caminhos_relatorios)
+
+            for banco, dados in dados_por_banco.items():
+                conciliacoes = dados["entradas"] + dados["saidas"]
+                transacoes = dados["lancamentos"]
+
+                for t in transacoes:
+                    (transacoes_saida if t["tipo"] == "D" else transacoes_entrada).append(t)
+                for c in conciliacoes:
+                    (conciliacoes_saida if c["tipo"] == "D" else conciliacoes_entrada).append(c)
+
+            # <-- Adicione esta parte -->
+            lancamentos_empresa_por_banco = {
+                banco: dados["lancamentos"]
+                for banco, dados in dados_por_banco.items()
+            }
 
             messagebox.showinfo("Sucesso", "Relatórios importados com sucesso.")
         except Exception as e:
@@ -134,32 +128,85 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
         if not transacoes_saida and not transacoes_entrada:
             messagebox.showerror("Erro", "Importe pelo menos um relatório de SAÍDA ou ENTRADA.")
             return
+
         try:
+            print("[DEBUG] Iniciando processamento completo")
+
             extrato_banco = pd.concat(extratos_bancarios, ignore_index=True)
-            if nome_parser_empresa == "mecflu":
+            print(f"[DEBUG] Extrato bancário concatenado: {extrato_banco.shape}")
+
+            if id_empresa.lower() == "mecflu":
                 extrato_banco = remover_transferencias_entre_bancos(extrato_banco)
+                print("[DEBUG] Remoção de transferências entre bancos aplicada (MECFLU)")
 
-            nome_limpo = normalize_text(nome_empresa).replace(" ", "_")
-            conta_corrente = conta_corrente_entry.get().strip()
-            nome_base = f"{nome_limpo}_{conta_corrente}"
 
-            todas_transacoes_empresa = transacoes_saida + transacoes_entrada
-            salvar_resultados(todas_transacoes_empresa, nome_base=f"Empresa_{nome_base}", salvar_txt=True)
+            nome_limpo = ParserBase.normalize_text(nome_empresa).replace(" ", "_")
+            data_hoje = datetime.now().strftime("%Y-%m-%d")
+            pasta_saida = os.path.join(caminho_area_de_trabalho(), f"{nome_limpo}_{data_hoje}")
+            os.makedirs(pasta_saida, exist_ok=True)
+            print(f"[DEBUG] Pasta de saída criada: {pasta_saida}")
 
-            resumo_saida = parser_empresa.conciliar_saidas(
-                [mov for mov in conciliacoes_saida if mov["tipo"] == "D"],
-                extrato_banco
-            )
-            salvar_resultados(resumo_saida, nome_base=f"Saida_{nome_base}")
+            df_saida = pd.DataFrame(conciliacoes_saida)
+            df_entrada = pd.DataFrame(conciliacoes_entrada)
+            print(f"[DEBUG] Linhas em df_saida: {df_saida.shape[0]}")
+            print(f"[DEBUG] Linhas em df_entrada: {df_entrada.shape[0]}")
 
-            resumo_entrada = parser_empresa.conciliar_entradas(
-                [mov for mov in conciliacoes_entrada if mov["tipo"] == "C"],
-                extrato_banco
-            )
-            salvar_resultados(resumo_entrada, nome_base=f"Entrada_{nome_base}")
+            conciliacoes_por_banco_saida = []
+            conciliacoes_por_banco_entrada = []
+
+            # Assume que 'dados_por_banco' foi preenchido corretamente pelo parser durante a importação
+            bancos_no_extrato = extrato_banco["banco"].dropna().unique()
+            print(f"[DEBUG] Bancos encontrados no extrato: {bancos_no_extrato}")
+
+            todos_lancamentos = []
+
+            for banco in bancos_no_extrato:
+                print(f"[DEBUG] Processando banco: {banco}")
+                df_extrato_banco = extrato_banco[extrato_banco["banco"].str.lower() == banco.lower()]
+                df_saida_banco = df_saida[df_saida["banco"].str.lower() == banco.lower()] if "banco" in df_saida.columns else df_saida
+                df_entrada_banco = df_entrada[df_entrada["banco"].str.lower() == banco.lower()] if "banco" in df_entrada.columns else df_entrada
+
+                conc_saida = BaseConciliacao().conciliar_saidas(df_saida_banco, df_extrato_banco, banco)
+                conc_entrada = BaseConciliacao().conciliar_entradas(df_entrada_banco, df_extrato_banco, banco)
+
+                if not conc_saida.empty:
+                    conc_saida["banco"] = banco
+                    conciliacoes_por_banco_saida.append(conc_saida)
+                    print(f"[DEBUG] Conciliações de saída adicionadas para {banco}: {conc_saida.shape[0]} linhas")
+
+                if not conc_entrada.empty:
+                    conc_entrada["banco"] = banco
+                    conciliacoes_por_banco_entrada.append(conc_entrada)
+                    print(f"[DEBUG] Conciliações de entrada adicionadas para {banco}: {conc_entrada.shape[0]} linhas")
+
+                # Salva o relatório de conciliação
+                BaseRelatorio().gerar_relatorio_conciliacao(conc_entrada, conc_saida, pasta_saida, banco)
+                print(f"[DEBUG] Relatório de conciliação salvo para banco: {banco}")
+
+                # Pega os lançamentos contábeis da empresa, por banco
+                if banco in lancamentos_empresa_por_banco:
+                    todos_lancamentos.extend(lancamentos_empresa_por_banco[banco])
+
+            # Gera os relatórios contábeis (Excel e TXT)
+            if todos_lancamentos:
+                print("[DEBUG] Total de lançamentos:", len(todos_lancamentos))
+                print("[DEBUG] Exemplo de lançamento:", todos_lancamentos[0])
+                campos_esperados = {'data', 'descricao', 'valor', 'conta_debito', 'conta_credito', 'tipo', 'fornecedor_nome'}
+                for i, lanc in enumerate(todos_lancamentos):
+                    if set(lanc.keys()) != campos_esperados:
+                        print(f"[ERRO] Lançamento {i} com campos inesperados:", lanc.keys())
+
+                relatorio = BaseRelatorio()
+                relatorio.gerar_relatorio_contabil(lancamentos=todos_lancamentos, destino=pasta_saida)
+                relatorio.gerar_arquivo_txt(lancamentos=todos_lancamentos, destino=pasta_saida)
+                print(f"[DEBUG] Relatórios contábeis gerados: {len(todos_lancamentos)} lançamentos")
+
+            messagebox.showinfo("Processamento concluído", f"Relatórios salvos em:\n{pasta_saida}")
 
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro no processamento:\n{e}")
+            print(f"[ERRO] Exceção durante processamento: {str(e)}")
+            messagebox.showerror("Erro no processamento", str(e))
+
 
     def resetar_dados():
         nonlocal transacoes_saida, transacoes_entrada, extratos_bancarios
