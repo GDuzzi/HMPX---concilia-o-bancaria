@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('config', 'config'), ('gui', 'gui'), ('static', 'static'), ('parsers', 'parsers')],
+    datas=[('config', 'config'), ('gui', 'gui'), ('static', 'static'), ('parsers', 'parsers'), ('services', 'services')],
     hiddenimports=['rapidfuzz', 'pdfplumber'],
     hookspath=[],
     hooksconfig={},

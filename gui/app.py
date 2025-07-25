@@ -3,6 +3,7 @@ from tkinter import messagebox
 from tkinter import filedialog
 import os
 import json
+import pandas as pd
 from PIL import Image
 from services.config import recurso_path, carregar_empresa
 from parsers.BaseRelatorio import BaseRelatorio
@@ -76,7 +77,6 @@ def iniciar_aplicacao():
             if not caminho:
                 return
 
-            import pandas as pd
             df = pd.read_excel(caminho)
             if df.empty:
                 messagebox.showerror("Erro", "O arquivo está vazio.")
@@ -85,8 +85,13 @@ def iniciar_aplicacao():
             lancamentos = df.to_dict(orient="records")
             destino = os.path.dirname(caminho)
 
-            relatorio.gerar_arquivo_txt(lancamentos, destino)
-            messagebox.showinfo("Sucesso", f"Arquivo TXT gerado na mesma pasta da planilha!")
+            # 🧠 Gera nome igual ao da planilha, trocando extensão para .txt
+            nome_base = os.path.splitext(os.path.basename(caminho))[0]
+            nome_txt = nome_base + ".txt"
+            caminho_txt = os.path.join(destino, nome_txt)
+
+            relatorio.gerar_arquivo_txt(lancamentos, destino=caminho_txt)
+            messagebox.showinfo("Sucesso", f"Arquivo TXT gerado: {caminho_txt}")
 
         except Exception as e:
             messagebox.showerror("Erro", f"Ocorreu um erro ao gerar o TXT:\n{e}")
@@ -94,7 +99,7 @@ def iniciar_aplicacao():
     # Botões
     botoes = [
         ("Iniciar Conciliação", confirmar_empresa, "#3182CE", "#225EA8"),
-        ("Gerar TXT da Planilha", lambda: gerar_txt_a_partir_da_planilha(recurso_path("config/DE-PARA.xlsx")), "#805AD5", "#6B46C1"),
+        ("Gerar TXT da Planilha", lambda: gerar_txt_a_partir_da_planilha(), "#805AD5", "#6B46C1"),
         ("Editar DE-PARA", lambda: abrir_tela_depara(app), "#D69E2E", "#B7791F")
     ]
 

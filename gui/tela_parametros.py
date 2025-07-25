@@ -9,7 +9,6 @@ from parsers.baseParser import ParserBase
 from services.utils import remover_transferencias_entre_bancos
 from parsers.registry import get_empresa
 from services.config import recurso_path, caminho_area_de_trabalho
-from services.depara import carregar_depara
 from parsers.BaseConciliacao import BaseConciliacao
 from parsers.BaseRelatorio import BaseRelatorio
 from datetime import datetime
@@ -34,7 +33,7 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
 
     janela = ctk.CTkToplevel()
     janela.title(f"Importar Extrato - {nome_empresa}")
-    janela.geometry("1280x520")
+    janela.geometry("920x400")
 
     def ao_fechar_janela():
         janela.destroy()
@@ -50,23 +49,25 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
 
 
 
-    menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
-    menu_frame.pack(pady=(0, 25))
+    # menu_frame = ctk.CTkFrame(frame, fg_color="transparent")
+    # menu_frame.pack_forget()
 
-    banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau", "santander"], width=340)
-    banco_opcao.set("banco_brasil")
-    banco_opcao.pack(pady=8)
+    # banco_opcao = ctk.CTkOptionMenu(menu_frame, values=["banco_brasil", "sicredi", "caixa", "itau", "santander"], width=340)
+    # banco_opcao.set("banco_brasil")
+    # banco_opcao.pack(pady=8)
 
-    tipo_opcao = None
-    if id_empresa.lower() != "imperio":
-        tipo_opcao = ctk.CTkOptionMenu(menu_frame, values=["SAIDA", "ENTRADA"], width=340)
-        tipo_opcao.set("SAIDA")
-        tipo_opcao.pack(pady=8)
+    # tipo_opcao = None
+    # if id_empresa.lower() != "imperio":
+    #     tipo_opcao = ctk.CTkOptionMenu(menu_frame, values=["SAIDA", "ENTRADA"], width=340)
+    #     tipo_opcao.set("SAIDA")
+    #     tipo_opcao.pack(pady=8)
 
     parser_empresa = None
     transacoes_saida, transacoes_entrada, extratos_bancarios = [], [], []
     conciliacoes_entrada, conciliacoes_saida = [], []
     lancamentos_empresa_por_banco = {}
+    conciliacoes_entrada_por_banco = {}
+    conciliacoes_saida_por_banco = {}
 
     def importar_relatorios_empresa():
         caminhos_relatorios = filedialog.askopenfilenames(
@@ -82,13 +83,23 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
             dados_por_banco = parser.importar_arquivo(caminhos_relatorios)
 
             for banco, dados in dados_por_banco.items():
-                conciliacoes = dados["entradas"] + dados["saidas"]
                 transacoes = dados["lancamentos"]
+                entradas = [c for c in dados["entradas"] if c["tipo"] == "C"]
+                saidas = [c for c in dados["saidas"] if c["tipo"] == "D"]
 
                 for t in transacoes:
                     (transacoes_saida if t["tipo"] == "D" else transacoes_entrada).append(t)
-                for c in conciliacoes:
-                    (conciliacoes_saida if c["tipo"] == "D" else conciliacoes_entrada).append(c)
+
+                for c in entradas:
+                    conciliacoes_entrada.append(c)
+                for c in saidas:
+                    conciliacoes_saida.append(c)
+
+                # NOVO: guardar conciliações separadas por banco
+                conciliacoes_entrada_por_banco[banco.lower()] = pd.DataFrame(entradas)
+                conciliacoes_saida_por_banco[banco.lower()] = pd.DataFrame(saidas)
+
+                lancamentos_empresa_por_banco[banco.lower()] = transacoes
 
             # <-- Adicione esta parte -->
             lancamentos_empresa_por_banco = {
@@ -101,27 +112,52 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
             messagebox.showerror("Erro", f"Erro ao importar relatórios:\n{e}")
 
     def importar_extrato():
-        caminho_extrato = filedialog.askopenfilename(
-            title="Selecionar Extrato Bancário (PDF)",
-            filetypes=[("Arquivos PDF", "*.pdf")]
-        )
-        if not caminho_extrato:
+        pasta = filedialog.askdirectory(title="Selecionar Pasta com Extratos Bancários")
+        if not pasta:
             return
 
-        banco_selecionado = banco_opcao.get()
-        try:
-            parser_banco = importlib.import_module(f"parsers.bancos.{banco_selecionado}")
-            extrato = parser_banco.importar_extrato(caminho_extrato)
-            extrato["banco"] = banco_selecionado
-            if extrato.empty:
-                messagebox.showwarning("Aviso", f"O extrato do banco {banco_selecionado} está vazio.")
-                return
-            extratos_bancarios.append(extrato)
-            messagebox.showinfo("Sucesso", f"Extrato de {banco_selecionado} adicionado.")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao importar extrato:\n{e}")
+        regras_banco = {
+            "itau": "itau",
+            "santander": "santander",
+            "brasil": "brasil",
+            "sicredi": "sicredi",
+            "caixa": "caixa"
+        }
+
+        arquivos_pdf = [f for f in os.listdir(pasta) if f.lower().endswith(".pdf")]
+        if not arquivos_pdf:
+            messagebox.showwarning("Aviso", "Nenhum arquivo PDF encontrado na pasta selecionada.")
+            return
+
+        for nome_arquivo in arquivos_pdf:
+            caminho_completo = os.path.join(pasta, nome_arquivo)
+            nome_lower = nome_arquivo.lower()
+
+            banco_detectado = None
+            for banco, palavra_chave in regras_banco.items():
+                if palavra_chave in nome_lower:
+                    banco_detectado = banco
+                    break
+
+            if not banco_detectado:
+                continue
+
+            try:
+                parser_banco = importlib.import_module(f"parsers.bancos.{banco_detectado}")
+                extrato = parser_banco.importar_extrato(caminho_completo)
+                extrato["banco"] = banco_detectado
+
+                if extrato.empty:
+                    continue
+
+                extratos_bancarios.append(extrato)
+            except Exception as e:
+                messagebox.showinfo("Importação concluída", f"{len(extratos_bancarios)} extratos importados com sucesso.")
 
     def processar_tudo():
+        print("🔎 conciliacoes_entrada_por_banco:", conciliacoes_entrada_por_banco.keys())
+        print("🔎 conciliacoes_saida_por_banco:", conciliacoes_saida_por_banco.keys())
+        
         if not extratos_bancarios:
             messagebox.showerror("Erro", "Nenhum extrato bancário foi importado.")
             return
@@ -130,83 +166,58 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
             return
 
         try:
-            print("[DEBUG] Iniciando processamento completo")
-
             extrato_banco = pd.concat(extratos_bancarios, ignore_index=True)
-            print(f"[DEBUG] Extrato bancário concatenado: {extrato_banco.shape}")
-
             if id_empresa.lower() == "mecflu":
                 extrato_banco = remover_transferencias_entre_bancos(extrato_banco)
-                print("[DEBUG] Remoção de transferências entre bancos aplicada (MECFLU)")
-
 
             nome_limpo = ParserBase.normalize_text(nome_empresa).replace(" ", "_")
             data_hoje = datetime.now().strftime("%Y-%m-%d")
             pasta_saida = os.path.join(caminho_area_de_trabalho(), f"{nome_limpo}_{data_hoje}")
             os.makedirs(pasta_saida, exist_ok=True)
-            print(f"[DEBUG] Pasta de saída criada: {pasta_saida}")
 
-            df_saida = pd.DataFrame(conciliacoes_saida)
-            df_entrada = pd.DataFrame(conciliacoes_entrada)
-            print(f"[DEBUG] Linhas em df_saida: {df_saida.shape[0]}")
-            print(f"[DEBUG] Linhas em df_entrada: {df_entrada.shape[0]}")
+
+            df_saida_por_banco = conciliacoes_saida_por_banco
+            df_entrada_por_banco = conciliacoes_entrada_por_banco
 
             conciliacoes_por_banco_saida = []
             conciliacoes_por_banco_entrada = []
 
-            # Assume que 'dados_por_banco' foi preenchido corretamente pelo parser durante a importação
             bancos_no_extrato = extrato_banco["banco"].dropna().unique()
-            print(f"[DEBUG] Bancos encontrados no extrato: {bancos_no_extrato}")
-
             todos_lancamentos = []
 
             for banco in bancos_no_extrato:
-                print(f"[DEBUG] Processando banco: {banco}")
                 df_extrato_banco = extrato_banco[extrato_banco["banco"].str.lower() == banco.lower()]
-                df_saida_banco = df_saida[df_saida["banco"].str.lower() == banco.lower()] if "banco" in df_saida.columns else df_saida
-                df_entrada_banco = df_entrada[df_entrada["banco"].str.lower() == banco.lower()] if "banco" in df_entrada.columns else df_entrada
+                df_saida_banco = df_saida_por_banco.get(banco.lower(), pd.DataFrame())
+                df_entrada_banco = df_entrada_por_banco.get(banco.lower(), pd.DataFrame())
+
 
                 conc_saida = BaseConciliacao().conciliar_saidas(df_saida_banco, df_extrato_banco, banco)
                 conc_entrada = BaseConciliacao().conciliar_entradas(df_entrada_banco, df_extrato_banco, banco)
 
+
                 if not conc_saida.empty:
                     conc_saida["banco"] = banco
                     conciliacoes_por_banco_saida.append(conc_saida)
-                    print(f"[DEBUG] Conciliações de saída adicionadas para {banco}: {conc_saida.shape[0]} linhas")
-
                 if not conc_entrada.empty:
                     conc_entrada["banco"] = banco
                     conciliacoes_por_banco_entrada.append(conc_entrada)
-                    print(f"[DEBUG] Conciliações de entrada adicionadas para {banco}: {conc_entrada.shape[0]} linhas")
 
-                # Salva o relatório de conciliação
                 BaseRelatorio().gerar_relatorio_conciliacao(conc_entrada, conc_saida, pasta_saida, banco)
-                print(f"[DEBUG] Relatório de conciliação salvo para banco: {banco}")
 
-                # Pega os lançamentos contábeis da empresa, por banco
-                if banco in lancamentos_empresa_por_banco:
-                    todos_lancamentos.extend(lancamentos_empresa_por_banco[banco])
+                if banco.lower() in lancamentos_empresa_por_banco:
+                    todos_lancamentos.extend(lancamentos_empresa_por_banco[banco.lower()])
 
-            # Gera os relatórios contábeis (Excel e TXT)
             if todos_lancamentos:
-                print("[DEBUG] Total de lançamentos:", len(todos_lancamentos))
-                print("[DEBUG] Exemplo de lançamento:", todos_lancamentos[0])
                 campos_esperados = {'data', 'descricao', 'valor', 'conta_debito', 'conta_credito', 'tipo', 'fornecedor_nome'}
-                for i, lanc in enumerate(todos_lancamentos):
-                    if set(lanc.keys()) != campos_esperados:
-                        print(f"[ERRO] Lançamento {i} com campos inesperados:", lanc.keys())
 
                 relatorio = BaseRelatorio()
                 relatorio.gerar_relatorio_contabil(lancamentos=todos_lancamentos, destino=pasta_saida)
                 relatorio.gerar_arquivo_txt(lancamentos=todos_lancamentos, destino=pasta_saida)
-                print(f"[DEBUG] Relatórios contábeis gerados: {len(todos_lancamentos)} lançamentos")
 
             messagebox.showinfo("Processamento concluído", f"Relatórios salvos em:\n{pasta_saida}")
 
         except Exception as e:
-            print(f"[ERRO] Exceção durante processamento: {str(e)}")
             messagebox.showerror("Erro no processamento", str(e))
-
 
     def resetar_dados():
         nonlocal transacoes_saida, transacoes_entrada, extratos_bancarios
@@ -266,22 +277,29 @@ def abrir_tela_parametros(id_empresa, nome_empresa, app_ref):
 
     # === BOTÕES ===
     botoes_frame = ctk.CTkFrame(frame, fg_color="transparent")
-    botoes_frame.pack(pady=10)
+    botoes_frame.pack(pady=20)
+
     botoes = [
         ("Importar Relatório da Empresa", lambda: executar_em_thread(importar_relatorios_empresa), "#ED8936", "#DD6B20"),
         ("Adicionar Extrato Bancário", lambda: executar_em_thread(importar_extrato), "#3182CE", "#225EA8"),
         ("Processar Tudo", lambda: executar_em_thread(processar_tudo), "#2F855A", "#276749"),
         ("Resetar Dados", lambda: executar_em_thread(resetar_dados), "#E53E3E", "#C53030"),
     ]
+
     for i, (texto, comando, cor, cor_hover) in enumerate(botoes):
+        linha = i // 2   # 0 ou 1
+        coluna = i % 2   # 0 ou 1
         ctk.CTkButton(
             botoes_frame,
             text=texto,
-            width=240,
+            width=280,
             height=45,
             font=("Arial", 13, "bold"),
             fg_color=cor,
             hover_color=cor_hover,
             corner_radius=15,
             command=comando
-        ).grid(row=0, column=i, padx=10)
+        ).grid(row=linha, column=coluna, padx=30, pady=10)
+
+    # Centraliza as colunas
+    botoes_frame.grid_columnconfigure((0, 1), weight=1)

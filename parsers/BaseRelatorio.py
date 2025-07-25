@@ -22,16 +22,21 @@ class BaseRelatorio(ABC):
             raise RuntimeError(f"Erro ao salvar o arquivo: {e}")
     
     def gerar_arquivo_txt(self, lancamentos: list[dict], destino: str, nome_arquivo: str = "lancamentos_contabeis.txt"):
-        """ Salva um TXT com os lançamentos contábeis no layout padrão (Questor)"""
+        """Salva um TXT com os lançamentos contábeis no layout padrão (Questor)."""
 
         if not lancamentos:
             return
-        
-        caminho = os.path.join(destino, nome_arquivo)
-        os.makedirs(destino, exist_ok=True)
+
+        # Verifica se `destino` é um caminho de arquivo completo (contém extensão .txt)
+        if destino.lower().endswith(".txt"):
+            caminho = destino
+            os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        else:
+            os.makedirs(destino, exist_ok=True)
+            caminho = os.path.join(destino, nome_arquivo)
 
         try:
-            with(open(caminho, "w", encoding="utf-8")) as f:
+            with open(caminho, "w", encoding="utf-8") as f:
                 for row in lancamentos:
                     try:
                         data_raw = row.get("data")
@@ -41,14 +46,13 @@ class BaseRelatorio(ABC):
                             data_fmt = data_raw.strftime("%d%m%Y")
                     except:
                         data_fmt = str(row.get("data", ""))
-                    
 
                     descricao = str(row.get("descricao", "Lançamento contábil")).replace('"', "'")
                     conta_debito = row.get("conta_debito", "99999")
                     conta_credito = row.get("conta_credito", "99999")
                     valor = abs(row.get("valor", 0.0))
 
-                    linha = f'{data_fmt},{conta_debito},{conta_credito},{valor:2f},350,"{descricao}"\n'
+                    linha = f'{data_fmt},{conta_debito},{conta_credito},{valor:.2f},350,"{descricao}"\n'
                     f.write(linha)
         except Exception as e:
             raise RuntimeError(f"Erro ao salvar o arquivo: {e}")

@@ -1,12 +1,12 @@
 {
-  "mecflu": {
-    "nome": "MECFLU - INDUSTRIA, COMERCIO E PRESTACAO DE SERVICOS DE VEDACOES INDUSTRIAIS LTDA",
-    "parser": "mecflu",
-    "pasta_extratos": "dados/mecflu"
-  },
   "imperio": {
     "nome": "IMPERIO",
     "parser": "imperio",
     "pasta_extratos": "dados/imperio"
+  },
+  "lm": {
+    "nome": "L M ALIMENTOS SAUDAVEIS LTDA",
+    "parser": "lm",
+    "pasta_extratos": "dados/LM"
   }
 }
